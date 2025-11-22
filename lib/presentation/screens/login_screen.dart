@@ -2,8 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:patrol_management/core/constants/app_colors.dart';
 import 'package:patrol_management/core/utils/preferences.dart';
+import 'package:patrol_management/core/api/dio_client.dart';
 import 'package:patrol_management/data/services/patrol_api_service.dart';
 import 'package:patrol_management/presentation/screens/dashboard_screen.dart';
+import 'package:patrol_management/presentation/screens/admin_dashboard_screen.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -30,10 +32,17 @@ class _LoginScreenState extends State<LoginScreen> {
 
   Future<void> _checkExistingLogin() async {
     final apiKey = Preferences.getApiKey();
+    final isAdmin = await DioClient.isAdmin();
+
     if (apiKey != null && apiKey.isNotEmpty && mounted) {
+      // Navigate to appropriate screen based on role
       Navigator.pushReplacement(
         context,
-        MaterialPageRoute(builder: (context) => const DashboardScreen()),
+        MaterialPageRoute(
+          builder: (context) => isAdmin
+              ? const AdminDashboardScreen()
+              : const DashboardScreen(),
+        ),
       );
     }
   }
@@ -41,6 +50,15 @@ class _LoginScreenState extends State<LoginScreen> {
   Future<void> _loadUsers() async {
     try {
       final users = await _apiService.getUsers();
+      print('===== USERS LOADED =====');
+      for (var user in users) {
+        print('User: ${user['name']}');
+        print('  - ID: ${user['id']}');
+        print('  - is_admin: ${user['is_admin']}');
+        print('  - Type: ${user['is_admin'].runtimeType}');
+        print('---');
+      }
+      print('========================');
       if (mounted) {
         setState(() {
           _users = users;
@@ -73,6 +91,14 @@ class _LoginScreenState extends State<LoginScreen> {
     try {
       final apiKey = _selectedUser!['api_key'] as String;
 
+      // 🔍 DEBUG: Print selected user info
+      print('===== LOGIN ATTEMPT =====');
+      print('Selected User: ${_selectedUser!['name']}');
+      print('User ID: ${_selectedUser!['id']}');
+      print('is_admin value: ${_selectedUser!['is_admin']}');
+      print('is_admin type: ${_selectedUser!['is_admin'].runtimeType}');
+      print('========================');
+
       // Save API key
       await Preferences.saveApiKey(apiKey);
 
@@ -83,16 +109,42 @@ class _LoginScreenState extends State<LoginScreen> {
         await Preferences.saveDeviceId(deviceId);
       }
 
+      // Check if user is admin
+      final isAdmin = _selectedUser!['is_admin'] == true;
+
+      // 🔍 DEBUG: Print admin check result
+      print('🔍 isAdmin check result: $isAdmin');
+
+      // Save admin status in DioClient session
+      await DioClient.saveSession(
+        _selectedUser!['id'] ?? 0,
+        apiKey,
+        _selectedUser!['name'],
+        isAdmin: isAdmin,
+      );
+
+      // Verify it was saved
+      final savedIsAdmin = await DioClient.isAdmin();
+      print('🔍 Saved isAdmin in preferences: $savedIsAdmin');
+
       // Small delay
       await Future.delayed(const Duration(milliseconds: 100));
 
       if (mounted) {
+        print('🔍 Navigating to: ${isAdmin ? "AdminDashboard" : "Dashboard"}');
+
+        // Navigate to appropriate screen
         Navigator.pushReplacement(
           context,
-          MaterialPageRoute(builder: (context) => const DashboardScreen()),
+          MaterialPageRoute(
+            builder: (context) => isAdmin
+                ? const AdminDashboardScreen()
+                : const DashboardScreen(),
+          ),
         );
       }
     } catch (e) {
+      print('❌ Login error: $e');
       if (mounted) {
         setState(() {
           _isLoading = false;
@@ -203,7 +255,8 @@ class _LoginScreenState extends State<LoginScreen> {
                             GridView.builder(
                               shrinkWrap: true,
                               physics: const NeverScrollableScrollPhysics(),
-                              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                              gridDelegate:
+                              const SliverGridDelegateWithFixedCrossAxisCount(
                                 crossAxisCount: 2,
                                 crossAxisSpacing: 12,
                                 mainAxisSpacing: 12,
@@ -213,6 +266,7 @@ class _LoginScreenState extends State<LoginScreen> {
                               itemBuilder: (context, index) {
                                 final user = _users[index];
                                 final isSelected = _selectedUser == user;
+                                final isAdmin = user['is_admin'] == true;
 
                                 return InkWell(
                                   onTap: () {
@@ -237,19 +291,45 @@ class _LoginScreenState extends State<LoginScreen> {
                                     child: Column(
                                       mainAxisAlignment: MainAxisAlignment.center,
                                       children: [
-                                        CircleAvatar(
-                                          radius: 30,
-                                          backgroundColor: isSelected
-                                              ? AppColors.primary
-                                              : Colors.grey[400],
-                                          child: Text(
-                                            user['name'][0].toUpperCase(),
-                                            style: const TextStyle(
-                                              color: Colors.white,
-                                              fontSize: 24,
-                                              fontWeight: FontWeight.bold,
+                                        Stack(
+                                          children: [
+                                            CircleAvatar(
+                                              radius: 30,
+                                              backgroundColor: isSelected
+                                                  ? AppColors.primary
+                                                  : Colors.grey[400],
+                                              child: Text(
+                                                user['name'][0].toUpperCase(),
+                                                style: const TextStyle(
+                                                  color: Colors.white,
+                                                  fontSize: 24,
+                                                  fontWeight: FontWeight.bold,
+                                                ),
+                                              ),
                                             ),
-                                          ),
+                                            // Admin badge
+                                            if (isAdmin)
+                                              Positioned(
+                                                right: 0,
+                                                bottom: 0,
+                                                child: Container(
+                                                  padding: const EdgeInsets.all(4),
+                                                  decoration: BoxDecoration(
+                                                    color: Colors.orange,
+                                                    shape: BoxShape.circle,
+                                                    border: Border.all(
+                                                      color: Colors.white,
+                                                      width: 2,
+                                                    ),
+                                                  ),
+                                                  child: const Icon(
+                                                    Icons.admin_panel_settings,
+                                                    color: Colors.white,
+                                                    size: 14,
+                                                  ),
+                                                ),
+                                              ),
+                                          ],
                                         ),
                                         const SizedBox(height: 8),
                                         Text(
@@ -265,6 +345,15 @@ class _LoginScreenState extends State<LoginScreen> {
                                           maxLines: 2,
                                           overflow: TextOverflow.ellipsis,
                                         ),
+                                        if (isAdmin)
+                                          Text(
+                                            'Admin',
+                                            style: TextStyle(
+                                              fontSize: 10,
+                                              color: Colors.orange[700],
+                                              fontWeight: FontWeight.bold,
+                                            ),
+                                          ),
                                       ],
                                     ),
                                   ),
@@ -276,9 +365,8 @@ class _LoginScreenState extends State<LoginScreen> {
 
                         // Login Button
                         ElevatedButton(
-                          onPressed: (_isLoading || _selectedUser == null)
-                              ? null
-                              : _login,
+                          onPressed:
+                          (_isLoading || _selectedUser == null) ? null : _login,
                           style: ElevatedButton.styleFrom(
                             backgroundColor: AppColors.primary,
                             foregroundColor: Colors.white,
@@ -298,9 +386,12 @@ class _LoginScreenState extends State<LoginScreen> {
                                   Colors.white),
                             ),
                           )
-                              : const Text(
-                            'Start Patrol',
-                            style: TextStyle(
+                              : Text(
+                            _selectedUser != null &&
+                                _selectedUser!['is_admin'] == true
+                                ? 'Login as Admin'
+                                : 'Start Patrol',
+                            style: const TextStyle(
                               fontSize: 16,
                               fontWeight: FontWeight.bold,
                             ),

@@ -3,6 +3,8 @@ import 'package:flutter/scheduler.dart';
 import 'package:patrol_management/core/constants/app_colors.dart';
 import 'package:patrol_management/core/utils/preferences.dart';
 import 'package:patrol_management/data/services/patrol_api_service.dart';
+import 'package:patrol_management/data/services/map_screenshot_service.dart'; // NEW
+import 'package:patrol_management/data/services/admin_api_service.dart'; // NEW
 import 'package:patrol_management/presentation/screens/dashboard_screen.dart';
 import 'package:patrol_management/presentation/screens/qr_scanner_screen.dart';
 import 'package:patrol_management/data/services/gps_service.dart';
@@ -22,7 +24,12 @@ class ActivePatrolScreen extends StatefulWidget {
 
 class _ActivePatrolScreenState extends State<ActivePatrolScreen> {
   final PatrolApiService _apiService = PatrolApiService();
+  final MapScreenshotService _mapScreenshotService = MapScreenshotService(); // NEW
+  final AdminApiService _adminApiService = AdminApiService(); // NEW
+  final GlobalKey _mapKey = GlobalKey(); // NEW: For screenshot capture
+
   bool _isEnding = false;
+  bool _isCapturingMap = false; // NEW
   List<Map<String, dynamic>> _scannedCheckpoints = [];
   bool _showMap = false;
   MapController _mapController = MapController();
@@ -72,16 +79,57 @@ class _ActivePatrolScreenState extends State<ActivePatrolScreen> {
 
     if (_isEnding) return;
 
-    GpsService.stopTracking();
-
     setState(() => _isEnding = true);
 
     try {
       final apiKey = Preferences.getApiKey();
-      print('API Key: ${apiKey?.substring(0, 10)}...');
-
       if (apiKey == null) throw Exception('No API key');
 
+      // STEP 1: Capture map screenshot if map is visible
+      if (_showMap && _routePoints.isNotEmpty) {
+        setState(() => _isCapturingMap = true);
+
+        try {
+          print('📸 Capturing map screenshot...');
+
+          // Wait for map to render completely
+          await Future.delayed(const Duration(milliseconds: 500));
+
+          final screenshot = await _mapScreenshotService.captureMapWithRoute(
+            mapKey: _mapKey,
+          );
+
+          if (screenshot != null) {
+            // Convert to base64
+            final base64Image = _mapScreenshotService.bytesToBase64(screenshot);
+            print('✅ Map captured: ${screenshot.length} bytes');
+
+            // Upload to server
+            try {
+              await _adminApiService.uploadMapScreenshot(
+                widget.sessionId,
+                base64Image,
+              );
+              print('✅ Map uploaded successfully');
+            } catch (e) {
+              print('⚠️ Map upload failed, but continuing: $e');
+              // Continue even if upload fails
+            }
+          } else {
+            print('⚠️ Map capture returned null');
+          }
+        } catch (e) {
+          print('⚠️ Map capture error (continuing): $e');
+          // Continue even if screenshot fails
+        } finally {
+          setState(() => _isCapturingMap = false);
+        }
+      }
+
+      // STEP 2: Stop GPS tracking
+      GpsService.stopTracking();
+
+      // STEP 3: End patrol via API
       print('Calling endPatrol API...');
       final response = await _apiService.endPatrol(apiKey, widget.sessionId);
       print('API Response: $response');
@@ -99,25 +147,26 @@ class _ActivePatrolScreenState extends State<ActivePatrolScreen> {
         ),
       );
 
-      // Wait for snackbar + navigation frame
+      // Wait for snackbar
       await Future.delayed(const Duration(milliseconds: 1500));
 
       if (!mounted) return;
 
       print('Navigating to dashboard...');
-
-      // Use simple pushReplacement instead
       Navigator.of(context, rootNavigator: true).pushReplacement(
         MaterialPageRoute(builder: (context) => const DashboardScreen()),
       );
-
     } catch (e, stackTrace) {
       print('❌ Error ending patrol: $e');
       print('Stack trace: $stackTrace');
 
       if (!mounted) return;
 
-      setState(() => _isEnding = false);
+      setState(() {
+        _isEnding = false;
+        _isCapturingMap = false;
+      });
+
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('Error ending patrol: $e'),
@@ -240,7 +289,8 @@ class _ActivePatrolScreenState extends State<ActivePatrolScreen> {
                   Row(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: const [
-                      Icon(Icons.radio_button_checked, color: Colors.white, size: 16),
+                      Icon(Icons.radio_button_checked,
+                          color: Colors.white, size: 16),
                       SizedBox(width: 8),
                       Text(
                         'PATROL IN PROGRESS',
@@ -279,7 +329,8 @@ class _ActivePatrolScreenState extends State<ActivePatrolScreen> {
                 style: ElevatedButton.styleFrom(
                   backgroundColor: AppColors.primary,
                   foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 32),
+                  padding:
+                  const EdgeInsets.symmetric(vertical: 20, horizontal: 32),
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(16),
                   ),
@@ -323,13 +374,26 @@ class _ActivePatrolScreenState extends State<ActivePatrolScreen> {
                     ),
                   ),
                   child: _isEnding
-                      ? const SizedBox(
-                    height: 20,
-                    width: 20,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
-                    ),
+                      ? Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      const SizedBox(
+                        height: 20,
+                        width: 20,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          valueColor:
+                          AlwaysStoppedAnimation<Color>(Colors.white),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Text(
+                        _isCapturingMap
+                            ? 'Saving map...'
+                            : 'Ending patrol...',
+                        style: const TextStyle(fontSize: 16),
+                      ),
+                    ],
                   )
                       : Row(
                     mainAxisAlignment: MainAxisAlignment.center,
@@ -353,6 +417,7 @@ class _ActivePatrolScreenState extends State<ActivePatrolScreen> {
       ),
     );
   }
+
   Widget _buildMapView() {
     if (_currentLocation == null && _routePoints.isEmpty) {
       return const Center(
@@ -367,98 +432,93 @@ class _ActivePatrolScreenState extends State<ActivePatrolScreen> {
       );
     }
 
-    // Calculate bounds to fit all points
     LatLng center = _currentLocation ?? const LatLng(36.7538, 3.0588);
 
     return Stack(
       children: [
-        FlutterMap(
-          mapController: _mapController,
-          options: MapOptions(
-            initialCenter: center,
-            initialZoom: 16.0,
-            minZoom: 5.0,
-            maxZoom: 18.0,
-          ),
-          children: [
-            // OpenStreetMap Tiles
-            TileLayer(
-              urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-              userAgentPackageName: 'com.example.patrol_app',
+        // Wrap map with RepaintBoundary for screenshot
+        RepaintBoundary(
+          key: _mapKey,
+          child: FlutterMap(
+            mapController: _mapController,
+            options: MapOptions(
+              initialCenter: center,
+              initialZoom: 16.0,
+              minZoom: 5.0,
+              maxZoom: 18.0,
             ),
+            children: [
+              TileLayer(
+                urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                userAgentPackageName: 'com.example.patrol_app',
+              ),
+              if (_routePoints.length > 1)
+                PolylineLayer(
+                  polylines: [
+                    Polyline(
+                      points: _routePoints,
+                      color: AppColors.primary,
+                      strokeWidth: 4.0,
+                    ),
+                  ],
+                ),
+              MarkerLayer(
+                markers: [
+                  ..._scannedCheckpoints.map((checkpoint) {
+                    final lat = checkpoint['lat'] as double?;
+                    final lon = checkpoint['lon'] as double?;
+                    if (lat == null || lon == null) return null;
 
-            // Route Polyline
-            if (_routePoints.length > 1)
-              PolylineLayer(
-                polylines: [
-                  Polyline(
-                    points: _routePoints,
-                    color: AppColors.primary,
-                    strokeWidth: 4.0,
-                  ),
+                    return Marker(
+                      point: LatLng(lat, lon),
+                      width: 40,
+                      height: 40,
+                      child: Container(
+                        decoration: BoxDecoration(
+                          color: AppColors.success,
+                          shape: BoxShape.circle,
+                          border: Border.all(color: Colors.white, width: 2),
+                        ),
+                        child: const Icon(
+                          Icons.check,
+                          color: Colors.white,
+                          size: 20,
+                        ),
+                      ),
+                    );
+                  }).whereType<Marker>().toList(),
+                  if (_currentLocation != null)
+                    Marker(
+                      point: _currentLocation!,
+                      width: 50,
+                      height: 50,
+                      child: Container(
+                        decoration: BoxDecoration(
+                          color: Colors.blue,
+                          shape: BoxShape.circle,
+                          border: Border.all(color: Colors.white, width: 3),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.blue.withOpacity(0.5),
+                              blurRadius: 10,
+                              spreadRadius: 5,
+                            ),
+                          ],
+                        ),
+                        child: const Icon(
+                          Icons.navigation,
+                          color: Colors.white,
+                          size: 24,
+                        ),
+                      ),
+                    ),
                 ],
               ),
-
-            // Checkpoint Markers
-            MarkerLayer(
-              markers: [
-                // Scanned checkpoints
-                ..._scannedCheckpoints.map((checkpoint) {
-                  final lat = checkpoint['lat'] as double?;
-                  final lon = checkpoint['lon'] as double?;
-                  if (lat == null || lon == null) return null;
-
-                  return Marker(
-                    point: LatLng(lat, lon),
-                    width: 40,
-                    height: 40,
-                    child: Container(
-                      decoration: BoxDecoration(
-                        color: AppColors.success,
-                        shape: BoxShape.circle,
-                        border: Border.all(color: Colors.white, width: 2),
-                      ),
-                      child: const Icon(
-                        Icons.check,
-                        color: Colors.white,
-                        size: 20,
-                      ),
-                    ),
-                  );
-                }).whereType<Marker>().toList(),
-
-                // Current location marker
-                if (_currentLocation != null)
-                  Marker(
-                    point: _currentLocation!,
-                    width: 50,
-                    height: 50,
-                    child: Container(
-                      decoration: BoxDecoration(
-                        color: Colors.blue,
-                        shape: BoxShape.circle,
-                        border: Border.all(color: Colors.white, width: 3),
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.blue.withOpacity(0.5),
-                            blurRadius: 10,
-                            spreadRadius: 5,
-                          ),
-                        ],
-                      ),
-                      child: const Icon(
-                        Icons.navigation,
-                        color: Colors.white,
-                        size: 24,
-                      ),
-                    ),
-                  ),
-              ],
-            ),
-          ],
+            ],
+          ),
         ),
 
-        // Map Legend
+        // Map Legend (outside RepaintBoundary for cleaner screenshot)
         Positioned(
           top: 16,
           right: 16,

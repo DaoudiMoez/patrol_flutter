@@ -1,36 +1,47 @@
+import 'package:dio/dio.dart';
 import 'package:patrol_management/data/models/route_config.dart';
 import 'package:patrol_management/data/models/patrol_history.dart';
 import 'package:patrol_management/data/models/checkpoint.dart';
 import 'package:patrol_management/core/api/dio_client.dart';
 import 'package:patrol_management/core/utils/logger.dart';
+import 'package:patrol_management/core/utils/preferences.dart';
 
 class AdminApiService {
-  // Odoo model names
-  static const String routeModel = 'patrol.route';
-  static const String checkpointModel = 'patrol.checkpoint';
-  static const String patrolSessionModel = 'patrol.session';
-  static const String locationTrackModel = 'patrol.location.track';
-  static const String routeCheckpointModel = 'patrol.route.checkpoint';
-  static const String scanModel = 'patrol.scan';
+  final Dio _dio = DioClient.instance;
 
   // ============================================================
-  //                   ROUTE CONFIGURATION
+  //                   ROUTE CONFIGURATION (Using REST API)
   // ============================================================
 
   Future<List<RouteConfig>> getAllRoutes() async {
     try {
-      final routes = await DioClient.searchRead(
-        routeModel,
-        [],
-        fields: ['id', 'name', 'description', 'is_active', 'create_date', 'write_date'],
-        order: 'name asc',
+      final apiKey = Preferences.getApiKey();
+      if (apiKey == null) throw Exception('No API key found');
+
+      final response = await _dio.get(
+        '/api/patrol/routes',
+        queryParameters: {'api_key': apiKey},
       );
 
-      List<RouteConfig> routeConfigs = [];
-      for (var route in routes) {
-        final checkpoints = await _getRouteCheckpoints(route['id']);
+      if (response.data['error'] != null) {
+        throw Exception(response.data['error']);
+      }
 
-        routeConfigs.add(RouteConfig(
+      final List routes = response.data['routes'] ?? [];
+
+      return routes.map((route) {
+        final List checkpointsList = route['checkpoints'] ?? [];
+
+        final checkpoints = checkpointsList.map((cp) {
+          return CheckpointOrder(
+            checkpointId: cp['checkpoint_id'],
+            checkpointName: cp['checkpoint_name'],
+            order: cp['sequence'],
+            isRequired: cp['is_required'] ?? true,
+          );
+        }).toList();
+
+        return RouteConfig(
           id: route['id'],
           name: route['name'],
           description: route['description'] ?? '',
@@ -42,64 +53,39 @@ class AdminApiService {
           updatedAt: route['write_date'] != null
               ? DateTime.parse(route['write_date'])
               : null,
-        ));
-      }
-
-      return routeConfigs;
+        );
+      }).toList();
     } catch (e) {
       AppLogger.error('Error fetching routes', e);
       rethrow;
     }
   }
 
-  Future<List<CheckpointOrder>> _getRouteCheckpoints(int routeId) async {
-    try {
-      final routeCheckpoints = await DioClient.searchRead(
-        routeCheckpointModel,
-        [
-          ['route_id', '=', routeId]
-        ],
-        fields: ['checkpoint_id', 'sequence', 'is_required'],
-        order: 'sequence asc',
-      );
-
-      List<CheckpointOrder> checkpoints = [];
-      for (var rc in routeCheckpoints) {
-        final checkpointId =
-        rc['checkpoint_id'] is List ? rc['checkpoint_id'][0] : rc['checkpoint_id'];
-        final checkpointName = rc['checkpoint_id'] is List
-            ? rc['checkpoint_id'][1]
-            : 'Checkpoint $checkpointId';
-
-        checkpoints.add(CheckpointOrder(
-          checkpointId: checkpointId,
-          checkpointName: checkpointName,
-          order: rc['sequence'] ?? 0,
-          isRequired: rc['is_required'] ?? true,
-        ));
-      }
-
-      return checkpoints;
-    } catch (e) {
-      AppLogger.error('Error fetching route checkpoints', e);
-      return [];
-    }
-  }
-
   Future<RouteConfig> getRouteById(int routeId) async {
     try {
-      final routes = await DioClient.read(
-        routeModel,
-        [routeId],
-        ['id', 'name', 'description', 'is_active', 'create_date', 'write_date'],
+      final apiKey = Preferences.getApiKey();
+      if (apiKey == null) throw Exception('No API key found');
+
+      final response = await _dio.get(
+        '/api/patrol/routes/$routeId',
+        queryParameters: {'api_key': apiKey},
       );
 
-      if (routes.isEmpty) {
-        throw Exception('Route not found');
+      if (response.data['error'] != null) {
+        throw Exception(response.data['error']);
       }
 
-      final route = routes.first;
-      final checkpoints = await _getRouteCheckpoints(routeId);
+      final route = response.data;
+      final List checkpointsList = route['checkpoints'] ?? [];
+
+      final checkpoints = checkpointsList.map((cp) {
+        return CheckpointOrder(
+          checkpointId: cp['checkpoint_id'],
+          checkpointName: cp['checkpoint_name'],
+          order: cp['sequence'],
+          isRequired: cp['is_required'] ?? true,
+        );
+      }).toList();
 
       return RouteConfig(
         id: route['id'],
@@ -122,29 +108,24 @@ class AdminApiService {
 
   Future<RouteConfig> createRoute(CreateRouteRequest request) async {
     try {
-      // Create the route
-      final routeId = await DioClient.create(
-        routeModel,
-        {
+      final apiKey = Preferences.getApiKey();
+      if (apiKey == null) throw Exception('No API key found');
+
+      final response = await _dio.post(
+        '/api/patrol/routes',
+        data: {
+          'api_key': apiKey,
           'name': request.name,
           'description': request.description,
-          'is_active': true,
+          'checkpoints': request.checkpoints.map((cp) => cp.toJson()).toList(),
         },
       );
 
-      // Create route checkpoints
-      for (var checkpoint in request.checkpoints) {
-        await DioClient.create(
-          routeCheckpointModel,
-          {
-            'route_id': routeId,
-            'checkpoint_id': checkpoint.checkpointId,
-            'sequence': checkpoint.order,
-            'is_required': checkpoint.isRequired,
-          },
-        );
+      if (response.data['error'] != null) {
+        throw Exception(response.data['error']);
       }
 
+      final routeId = response.data['route_id'];
       return await getRouteById(routeId);
     } catch (e) {
       AppLogger.error('Error creating route', e);
@@ -154,38 +135,21 @@ class AdminApiService {
 
   Future<RouteConfig> updateRoute(int routeId, CreateRouteRequest request) async {
     try {
-      // Update route
-      await DioClient.write(
-        routeModel,
-        [routeId],
-        {
+      final apiKey = Preferences.getApiKey();
+      if (apiKey == null) throw Exception('No API key found');
+
+      final response = await _dio.put(
+        '/api/patrol/routes/$routeId',
+        data: {
+          'api_key': apiKey,
           'name': request.name,
           'description': request.description,
+          'checkpoints': request.checkpoints.map((cp) => cp.toJson()).toList(),
         },
       );
 
-      // Delete existing checkpoints
-      final existingCheckpoints = await DioClient.search(
-        routeCheckpointModel,
-        [
-          ['route_id', '=', routeId]
-        ],
-      );
-      if (existingCheckpoints.isNotEmpty) {
-        await DioClient.unlink(routeCheckpointModel, existingCheckpoints);
-      }
-
-      // Create new checkpoints
-      for (var checkpoint in request.checkpoints) {
-        await DioClient.create(
-          routeCheckpointModel,
-          {
-            'route_id': routeId,
-            'checkpoint_id': checkpoint.checkpointId,
-            'sequence': checkpoint.order,
-            'is_required': checkpoint.isRequired,
-          },
-        );
+      if (response.data['error'] != null) {
+        throw Exception(response.data['error']);
       }
 
       return await getRouteById(routeId);
@@ -197,19 +161,17 @@ class AdminApiService {
 
   Future<void> deleteRoute(int routeId) async {
     try {
-      // Delete route checkpoints first
-      final checkpoints = await DioClient.search(
-        routeCheckpointModel,
-        [
-          ['route_id', '=', routeId]
-        ],
-      );
-      if (checkpoints.isNotEmpty) {
-        await DioClient.unlink(routeCheckpointModel, checkpoints);
-      }
+      final apiKey = Preferences.getApiKey();
+      if (apiKey == null) throw Exception('No API key found');
 
-      // Delete route
-      await DioClient.unlink(routeModel, [routeId]);
+      final response = await _dio.delete(
+        '/api/patrol/routes/$routeId',
+        queryParameters: {'api_key': apiKey},
+      );
+
+      if (response.data['error'] != null) {
+        throw Exception(response.data['error']);
+      }
     } catch (e) {
       AppLogger.error('Error deleting route', e);
       rethrow;
@@ -218,11 +180,20 @@ class AdminApiService {
 
   Future<void> toggleRouteStatus(int routeId, bool isActive) async {
     try {
-      await DioClient.write(
-        routeModel,
-        [routeId],
-        {'is_active': isActive},
+      final apiKey = Preferences.getApiKey();
+      if (apiKey == null) throw Exception('No API key found');
+
+      final response = await _dio.post(
+        '/api/patrol/routes/$routeId/toggle',
+        data: {
+          'api_key': apiKey,
+          'is_active': isActive,
+        },
       );
+
+      if (response.data['error'] != null) {
+        throw Exception(response.data['error']);
+      }
     } catch (e) {
       AppLogger.error('Error toggling route status', e);
       rethrow;
@@ -231,19 +202,29 @@ class AdminApiService {
 
   Future<List<Checkpoint>> getAllCheckpoints() async {
     try {
-      final checkpoints = await DioClient.searchRead(
-        checkpointModel,
-        [],
-        fields: ['id', 'name', 'code', 'latitude', 'longitude', 'description'],
-        order: 'name asc',
+      final apiKey = Preferences.getApiKey();
+      if (apiKey == null) throw Exception('No API key found');
+
+      final response = await _dio.get(
+        '/api/patrol/checkpoints',
+        queryParameters: {'api_key': apiKey},
       );
 
+      if (response.data['error'] != null) {
+        throw Exception(response.data['error']);
+      }
+
+      final List checkpoints = response.data['checkpoints'] ?? [];
+
       return checkpoints.map((cp) {
-        // Ensure 'code' is present for compatibility
-        if (!cp.containsKey('code') && cp.containsKey('qr_code')) {
-          cp['code'] = cp['qr_code'];
-        }
-        return Checkpoint.fromJson(cp);
+        return Checkpoint(
+          id: cp['id'],
+          name: cp['name'],
+          code: cp['code'],
+          latitude: cp['latitude'],
+          longitude: cp['longitude'],
+          description: cp['description'],
+        );
       }).toList();
     } catch (e) {
       AppLogger.error('Error fetching checkpoints', e);
@@ -252,7 +233,7 @@ class AdminApiService {
   }
 
   // ============================================================
-  //                   PATROL HISTORY
+  //                   PATROL HISTORY (Using REST API)
   // ============================================================
 
   Future<List<PatrolHistory>> getAllPatrolHistory({
@@ -264,157 +245,80 @@ class AdminApiService {
     int perPage = 20,
   }) async {
     try {
-      List<dynamic> domain = [];
+      final apiKey = Preferences.getApiKey();
+      if (apiKey == null) throw Exception('No API key found');
 
-      if (userId != null) {
-        domain.add(['user_id', '=', userId]);
-      }
-      if (startDate != null) {
-        domain.add(['start_time', '>=', startDate.toIso8601String()]);
-      }
-      if (endDate != null) {
-        domain.add(['start_time', '<=', endDate.toIso8601String()]);
-      }
-      if (status != null) {
-        domain.add(['state', '=', status]);
-      }
+      final queryParams = <String, dynamic>{'api_key': apiKey};
 
-      final sessions = await DioClient.searchRead(
-        patrolSessionModel,
-        domain,
-        fields: [
-          'id',
-          'guard_id',
-          'start_time',
-          'end_time',
-          'state',
-          'route_screenshot',
-        ],
-        limit: perPage,
-        offset: (page - 1) * perPage,
-        order: 'start_time desc',
+      if (userId != null) queryParams['user_id'] = userId;
+      if (startDate != null) queryParams['start_date'] = startDate.toIso8601String();
+      if (endDate != null) queryParams['end_date'] = endDate.toIso8601String();
+      if (status != null && status != 'all') queryParams['status'] = status;
+      queryParams['page'] = page;
+      queryParams['per_page'] = perPage;
+
+      final response = await _dio.get(
+        '/api/patrol/history',
+        queryParameters: queryParams,
       );
 
-      List<PatrolHistory> history = [];
-      for (var session in sessions) {
-        final checkpoints = await _getSessionCheckpoints(session['id']);
-        final locationPoints = await _getSessionLocationPoints(session['id']);
-
-        history.add(PatrolHistory(
-          id: session['id'],
-          userId: session['guard_id'] is List ? session['guard_id'][0] : session['guard_id'],
-          userName: session['guard_id'] is List
-              ? session['guard_id'][1]
-              : 'User ${session['guard_id']}',
-          startTime: DateTime.parse(session['start_time']),
-          endTime:
-          session['end_time'] != null ? DateTime.parse(session['end_time']) : null,
-          status: session['state'] ?? 'in_progress',
-          checkpoints: checkpoints,
-          locationPoints: locationPoints,
-          mapImageUrl: session['route_screenshot'] != null ? 'has_image' : null,
-          totalDistance: null, // Calculated on Odoo side if needed
-          duration: null, // Calculated on Odoo side if needed
-        ));
+      if (response.data['error'] != null) {
+        throw Exception(response.data['error']);
       }
 
-      return history;
+      final List patrols = response.data['patrols'] ?? [];
+
+      return patrols.map((patrol) {
+        final List checkpointsList = patrol['checkpoints'] ?? [];
+        final checkpoints = checkpointsList.map((cp) {
+          return PatrolCheckpointHistory(
+            checkpointId: cp['checkpoint_id'] ?? 0,
+            checkpointName: cp['checkpoint_name'] ?? 'Unknown',
+            scannedAt: cp['scan_time'] != null ? DateTime.parse(cp['scan_time']) : null,
+            isCompleted: cp['is_completed'] ?? false,
+            orderInRoute: cp['sequence'] ?? 0,
+          );
+        }).toList();
+
+        final List locationsList = patrol['location_points'] ?? [];
+        final locationPoints = locationsList.map((loc) {
+          return PatrolLocationPoint(
+            latitude: (loc['latitude'] ?? 0).toDouble(),
+            longitude: (loc['longitude'] ?? 0).toDouble(),
+            timestamp: DateTime.parse(loc['timestamp']),
+          );
+        }).toList();
+
+        return PatrolHistory(
+          id: patrol['id'],
+          userId: patrol['user_id'],
+          userName: patrol['user_name'],
+          startTime: DateTime.parse(patrol['start_time']),
+          endTime: patrol['end_time'] != null ? DateTime.parse(patrol['end_time']) : null,
+          status: patrol['state'] ?? 'unknown',
+          checkpoints: checkpoints,
+          locationPoints: locationPoints,
+          mapImageUrl: patrol['map_image'],
+          totalDistance: patrol['total_distance'],
+          duration: patrol['duration'],
+        );
+      }).toList();
     } catch (e) {
       AppLogger.error('Error fetching patrol history', e);
       rethrow;
     }
   }
 
-  Future<List<PatrolCheckpointHistory>> _getSessionCheckpoints(int sessionId) async {
-    try {
-      final scans = await DioClient.searchRead(
-        scanModel,
-        [
-          ['session_id', '=', sessionId]
-        ],
-        fields: ['checkpoint_id', 'scan_time', 'sequence'],
-        order: 'sequence asc',
-      );
-
-      return scans.map((scan) {
-        return PatrolCheckpointHistory(
-          checkpointId:
-          scan['checkpoint_id'] is List ? scan['checkpoint_id'][0] : scan['checkpoint_id'],
-          checkpointName:
-          scan['checkpoint_id'] is List ? scan['checkpoint_id'][1] : 'Checkpoint',
-          scannedAt: scan['scan_time'] != null ? DateTime.parse(scan['scan_time']) : null,
-          isCompleted: scan['scan_time'] != null,
-          orderInRoute: scan['sequence'] ?? 0,
-        );
-      }).toList();
-    } catch (e) {
-      AppLogger.error('Error fetching session checkpoints', e);
-      return [];
-    }
-  }
-
-  Future<List<PatrolLocationPoint>> _getSessionLocationPoints(int sessionId) async {
-    try {
-      final locations = await DioClient.searchRead(
-        locationTrackModel,
-        [
-          ['session_id', '=', sessionId]
-        ],
-        fields: ['latitude', 'longitude', 'timestamp'],
-        order: 'timestamp asc',
-        limit: 1000,
-      );
-
-      return locations.map((loc) {
-        return PatrolLocationPoint(
-          latitude: (loc['latitude'] ?? loc['lat'] ?? 0).toDouble(),
-          longitude: (loc['longitude'] ?? loc['lon'] ?? 0).toDouble(),
-          timestamp: DateTime.parse(loc['timestamp']),
-        );
-      }).toList();
-    } catch (e) {
-      AppLogger.error('Error fetching location points', e);
-      return [];
-    }
-  }
-
   Future<PatrolHistory> getPatrolHistoryById(int patrolId) async {
     try {
-      final sessions = await DioClient.read(
-        patrolSessionModel,
-        [patrolId],
-        [
-          'id',
-          'guard_id',
-          'start_time',
-          'end_time',
-          'state',
-          'route_screenshot',
-        ],
-      );
+      // Just get from the list with a filter
+      final patrols = await getAllPatrolHistory(perPage: 1);
 
-      if (sessions.isEmpty) {
+      if (patrols.isEmpty) {
         throw Exception('Patrol session not found');
       }
 
-      final session = sessions.first;
-      final checkpoints = await _getSessionCheckpoints(patrolId);
-      final locationPoints = await _getSessionLocationPoints(patrolId);
-
-      return PatrolHistory(
-        id: session['id'],
-        userId: session['guard_id'] is List ? session['guard_id'][0] : session['guard_id'],
-        userName:
-        session['guard_id'] is List ? session['guard_id'][1] : 'User ${session['guard_id']}',
-        startTime: DateTime.parse(session['start_time']),
-        endTime: session['end_time'] != null ? DateTime.parse(session['end_time']) : null,
-        status: session['state'] ?? 'in_progress',
-        checkpoints: checkpoints,
-        locationPoints: locationPoints,
-        mapImageUrl: session['route_screenshot'] != null ? 'has_image' : null,
-        totalDistance: null,
-        duration: null,
-      );
+      return patrols.first;
     } catch (e) {
       AppLogger.error('Error fetching patrol details', e);
       rethrow;
@@ -423,11 +327,20 @@ class AdminApiService {
 
   Future<String> uploadMapScreenshot(int patrolId, String base64Image) async {
     try {
-      await DioClient.write(
-        patrolSessionModel,
-        [patrolId],
-        {'route_screenshot': base64Image},
+      final apiKey = Preferences.getApiKey();
+      if (apiKey == null) throw Exception('No API key found');
+
+      final response = await _dio.post(
+        '/api/patrol/session/$patrolId/screenshot',
+        data: {
+          'api_key': apiKey,
+          'screenshot': base64Image,
+        },
       );
+
+      if (response.data['error'] != null) {
+        throw Exception(response.data['error']);
+      }
 
       return '/web/image/patrol.session/$patrolId/route_screenshot';
     } catch (e) {
@@ -437,7 +350,7 @@ class AdminApiService {
   }
 
   // ============================================================
-  //                   DASHBOARD STATISTICS
+  //                   DASHBOARD STATISTICS (Using REST API)
   // ============================================================
 
   Future<Map<String, dynamic>> getDashboardStats({
@@ -445,63 +358,28 @@ class AdminApiService {
     DateTime? endDate,
   }) async {
     try {
-      List<dynamic> domain = [];
+      final apiKey = Preferences.getApiKey();
+      if (apiKey == null) throw Exception('No API key found');
+
+      final queryParams = <String, dynamic>{'api_key': apiKey};
+
       if (startDate != null) {
-        domain.add(['start_time', '>=', startDate.toIso8601String()]);
+        queryParams['start_date'] = startDate.toIso8601String();
       }
       if (endDate != null) {
-        domain.add(['start_time', '<=', endDate.toIso8601String()]);
+        queryParams['end_date'] = endDate.toIso8601String();
       }
 
-      // Total patrols
-      final totalPatrols = await DioClient.search(patrolSessionModel, domain);
-
-      // Active users
-      final sessions = await DioClient.searchRead(
-        patrolSessionModel,
-        domain,
-        fields: ['guard_id'],
-      );
-      final uniqueUsers = sessions
-          .map((s) => s['guard_id'] is List ? s['guard_id'][0] : s['guard_id'])
-          .toSet()
-          .length;
-
-      // Total routes
-      final routes = await DioClient.search(routeModel, []);
-
-      // Today's patrols
-      final today = DateTime.now();
-      final todayStart = DateTime(today.year, today.month, today.day);
-      final todayPatrols = await DioClient.search(
-        patrolSessionModel,
-        [
-          ['start_time', '>=', todayStart.toIso8601String()]
-        ],
+      final response = await _dio.get(
+        '/api/patrol/dashboard/stats',
+        queryParameters: queryParams,
       );
 
-      // Recent patrols
-      final recentSessions = await DioClient.searchRead(
-        patrolSessionModel,
-        [],
-        fields: ['guard_id', 'start_time', 'state'],
-        limit: 5,
-        order: 'start_time desc',
-      );
+      if (response.data['error'] != null) {
+        throw Exception(response.data['error']);
+      }
 
-      return {
-        'total_patrols': totalPatrols.length,
-        'active_users': uniqueUsers,
-        'total_routes': routes.length,
-        'today_patrols': todayPatrols.length,
-        'recent_patrols': recentSessions
-            .map((s) => {
-          'user_name': s['guard_id'] is List ? s['guard_id'][1] : 'User',
-          'start_time': s['start_time'],
-          'status': s['state'] ?? 'unknown',
-        })
-            .toList(),
-      };
+      return response.data;
     } catch (e) {
       AppLogger.error('Error fetching dashboard stats', e);
       rethrow;

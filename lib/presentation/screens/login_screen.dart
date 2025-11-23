@@ -50,15 +50,6 @@ class _LoginScreenState extends State<LoginScreen> {
   Future<void> _loadUsers() async {
     try {
       final users = await _apiService.getUsers();
-      print('===== USERS LOADED =====');
-      for (var user in users) {
-        print('User: ${user['name']}');
-        print('  - ID: ${user['id']}');
-        print('  - is_admin: ${user['is_admin']}');
-        print('  - Type: ${user['is_admin'].runtimeType}');
-        print('---');
-      }
-      print('========================');
       if (mounted) {
         setState(() {
           _users = users;
@@ -90,14 +81,13 @@ class _LoginScreenState extends State<LoginScreen> {
 
     try {
       final apiKey = _selectedUser!['api_key'] as String;
+      final isAdmin = _selectedUser!['is_admin'] == true;
 
-      // 🔍 DEBUG: Print selected user info
       print('===== LOGIN ATTEMPT =====');
       print('Selected User: ${_selectedUser!['name']}');
       print('User ID: ${_selectedUser!['id']}');
-      print('is_admin value: ${_selectedUser!['is_admin']}');
-      print('is_admin type: ${_selectedUser!['is_admin'].runtimeType}');
-      print('========================');
+      print('is_admin: $isAdmin');
+      print('API Key: ${apiKey.substring(0, 10)}...');
 
       // Save API key
       await Preferences.saveApiKey(apiKey);
@@ -109,29 +99,21 @@ class _LoginScreenState extends State<LoginScreen> {
         await Preferences.saveDeviceId(deviceId);
       }
 
-      // Check if user is admin
-      final isAdmin = _selectedUser!['is_admin'] == true;
-
-      // 🔍 DEBUG: Print admin check result
-      print('🔍 isAdmin check result: $isAdmin');
-
-      // Save admin status in DioClient session
+      // Save session info (using API key as session placeholder)
       await DioClient.saveSession(
         _selectedUser!['id'] ?? 0,
-        apiKey,
+        apiKey, // Using API key as session ID
         _selectedUser!['name'],
         isAdmin: isAdmin,
       );
 
-      // Verify it was saved
-      final savedIsAdmin = await DioClient.isAdmin();
-      print('🔍 Saved isAdmin in preferences: $savedIsAdmin');
+      print('✅ Session saved successfully');
 
-      // Small delay
-      await Future.delayed(const Duration(milliseconds: 100));
+      // Small delay to ensure preferences are saved
+      await Future.delayed(const Duration(milliseconds: 200));
 
       if (mounted) {
-        print('🔍 Navigating to: ${isAdmin ? "AdminDashboard" : "Dashboard"}');
+        print('🔄 Navigating to: ${isAdmin ? "AdminDashboard" : "Dashboard"}');
 
         // Navigate to appropriate screen
         Navigator.pushReplacement(
@@ -143,8 +125,10 @@ class _LoginScreenState extends State<LoginScreen> {
           ),
         );
       }
-    } catch (e) {
+    } catch (e, stackTrace) {
       print('❌ Login error: $e');
+      print('Stack trace: $stackTrace');
+
       if (mounted) {
         setState(() {
           _isLoading = false;

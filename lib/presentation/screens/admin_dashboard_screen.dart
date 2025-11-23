@@ -136,7 +136,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
           crossAxisCount: 2,
           crossAxisSpacing: 16,
           mainAxisSpacing: 16,
-          childAspectRatio: 1.5,
+          childAspectRatio: 1.3, // ✅ FIXED: Increased from 1.5 to prevent overflow
           children: [
             _buildStatCard(
               'Total Patrols',
@@ -172,24 +172,29 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
     return Card(
       elevation: 2,
       child: Padding(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.all(12), // ✅ FIXED: Reduced padding from 16 to 12
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(icon, size: 32, color: color),
-            const SizedBox(height: 8),
+            Icon(icon, size: 28, color: color), // ✅ FIXED: Reduced icon size from 32 to 28
+            const SizedBox(height: 6), // ✅ FIXED: Reduced spacing from 8 to 6
             Text(
               value,
               style: Theme.of(context).textTheme.headlineSmall?.copyWith(
                 fontWeight: FontWeight.bold,
                 color: color,
+                fontSize: 20, // ✅ FIXED: Explicitly set smaller font
               ),
             ),
-            const SizedBox(height: 4),
+            const SizedBox(height: 2), // ✅ FIXED: Reduced spacing from 4 to 2
             Text(
               title,
               textAlign: TextAlign.center,
-              style: Theme.of(context).textTheme.bodySmall,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                fontSize: 11, // ✅ FIXED: Reduced font size
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
             ),
           ],
         ),
@@ -332,7 +337,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
       case 'finished':
         return Colors.green;
       case 'in_progress':
-      case 'active':
+      case 'ongoing':
         return Colors.blue;
       case 'incomplete':
         return Colors.red;

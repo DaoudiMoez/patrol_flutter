@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:patrol_management/core/constants/app_colors.dart';
 import 'package:patrol_management/core/utils/preferences.dart';
 import 'package:patrol_management/presentation/screens/active_patrol_screen.dart';
+import 'package:patrol_management/presentation/screens/assigned_route_screen.dart';
 import 'package:patrol_management/presentation/screens/history_screen.dart';
 import 'package:patrol_management/presentation/screens/login_screen.dart';
 import 'package:patrol_management/data/services/patrol_api_service.dart';
@@ -68,16 +69,43 @@ class _DashboardScreenState extends State<DashboardScreen> {
       // Save session ID
       await Preferences.saveActiveSessionId(response.sessionId!);
 
-      // Navigate to active patrol screen
       if (mounted) {
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(
-            builder: (context) => ActivePatrolScreen(
-              sessionId: response.sessionId!,
+        setState(() => _isLoading = false);
+
+        // Check if route is assigned
+        if (response.route != null) {
+          // Show route screen first
+          final shouldStart = await Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) => AssignedRouteScreen(
+                routeData: response.route!,
+              ),
             ),
-          ),
-        );
+          );
+
+          // If user confirmed, go to active patrol
+          if (shouldStart == true && mounted) {
+            Navigator.pushReplacement(
+              context,
+              MaterialPageRoute(
+                builder: (context) => ActivePatrolScreen(
+                  sessionId: response.sessionId!,
+                ),
+              ),
+            );
+          }
+        } else {
+          // No route assigned, go directly to patrol
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(
+              builder: (context) => ActivePatrolScreen(
+                sessionId: response.sessionId!,
+              ),
+            ),
+          );
+        }
       }
     } catch (e) {
       if (mounted) {
@@ -87,9 +115,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
             backgroundColor: AppColors.error,
           ),
         );
-      }
-    } finally {
-      if (mounted) {
         setState(() => _isLoading = false);
       }
     }

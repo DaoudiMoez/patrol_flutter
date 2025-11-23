@@ -9,11 +9,13 @@ class StartPatrolResponse extends Equatable {
   final int? sessionId;
   final String? name;
   final String? error;
+  final Map<String, dynamic>? route; // NEW: Route assignment
 
   const StartPatrolResponse({
     this.sessionId,
     this.name,
     this.error,
+    this.route,
   });
 
   factory StartPatrolResponse.fromJson(Map<String, dynamic> json) =>
@@ -22,5 +24,5 @@ class StartPatrolResponse extends Equatable {
   Map<String, dynamic> toJson() => _$StartPatrolResponseToJson(this);
 
   @override
-  List<Object?> get props => [sessionId, name, error];
+  List<Object?> get props => [sessionId, name, error, route];
 }

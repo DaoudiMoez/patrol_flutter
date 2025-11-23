@@ -11,6 +11,7 @@ StartPatrolResponse _$StartPatrolResponseFromJson(Map<String, dynamic> json) =>
       sessionId: (json['session_id'] as num?)?.toInt(),
       name: json['name'] as String?,
       error: json['error'] as String?,
+      route: json['route'] as Map<String, dynamic>?,
     );
 
 Map<String, dynamic> _$StartPatrolResponseToJson(
@@ -19,4 +20,5 @@ Map<String, dynamic> _$StartPatrolResponseToJson(
       'session_id': instance.sessionId,
       'name': instance.name,
       'error': instance.error,
+      'route': instance.route,
     };
